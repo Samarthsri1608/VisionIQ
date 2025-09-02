@@ -7,3 +7,4 @@ gunicorn==21.2.0
 google-genai
 ultralytics
 opencv-python
+python-dotenv
