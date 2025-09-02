@@ -118,6 +118,7 @@ def detect():
         return jsonify({"error": "invalid or unsupported file"}), 400
 
     question = request.form.get("question", "").strip()
+    model = get_yolo_model()
 
     raw = f.read()
     pil = pil_from_bytes(raw)
