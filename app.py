@@ -96,7 +96,7 @@ def draw_boxes(pil_img: Image.Image, detections: List[Dict[str, Any]]) -> Image.
 @app.route("/")
 def home():
     # Serve the frontend if placed alongside app.py
-    return send_file("web.html")
+    return send_file("template/index.html")
 
 
 @app.route("/detect", methods=["POST"])
