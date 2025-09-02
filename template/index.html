@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Safety Vision</title>
+<style>
+  :root {
+    --primary-color: #1f8ef1;
+    --bg-color: #121212;
+    --card-bg: #1e1e2f;
+    --text-color: #e0e0e0;
+    --secondary-color: #bbbbbb;
+    --gap: 24px;
+    --radius: 12px;
+  }
+
+  body {
+    margin: 0;
+    font-family: 'Segoe UI', Roboto, sans-serif;
+    background: var(--bg-color);
+    color: var(--text-color);
+  }
+
+  header {
+    background: #0f0f17;
+    padding: 20px;
+    text-align: center;
+    font-size: 1.6rem;
+    font-weight: bold;
+    color: var(--primary-color);
+    box-shadow: 0 2px 12px rgba(0,0,0,0.5);
+  }
+
+  .container {
+    max-width: 1200px;
+    margin: 20px auto;
+    padding: 0 16px;
+    display: flex;
+    flex-direction: column;
+    gap: var(--gap);
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--gap);
+  }
+  @media (max-width: 900px) {
+    .grid { grid-template-columns: 1fr; }
+  }
+
+  .card {
+    background: var(--card-bg);
+    border-radius: var(--radius);
+    padding: 24px;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.6);
+  }
+
+  h3 {
+    margin-top: 0;
+    margin-bottom: 16px;
+    color: var(--primary-color);
+    font-weight: 600;
+  }
+
+  input[type="file"], button {
+    width: 100%;
+    border-radius: var(--radius);
+    padding: 12px;
+    margin-bottom: 16px;
+    font-size: 1rem;
+    border: none;
+    outline: none;
+  }
+  button {
+    background: var(--primary-color);
+    color: #fff;
+    cursor: pointer;
+    font-weight: 600;
+  }
+  button:hover { background: #1066c9; }
+
+  #annotated {
+    max-width: 100%;
+    height: auto;
+    border-radius: var(--radius);
+    margin-top: 12px;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.7);
+  }
+
+  .accordion {
+    margin: 10px 0;
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+  .accordion button {
+    width: 100%;
+    text-align: left;
+    padding: 12px;
+    font-size: 1rem;
+    font-weight: 600;
+    cursor: pointer;
+    border: none;
+    outline: none;
+    background: inherit;
+    color: inherit;
+  }
+  .accordion-content {
+    display: none;
+    padding: 10px 14px;
+    font-size: 0.95rem;
+    line-height: 1.5;
+  }
+  .accordion.active .accordion-content {
+    display: block;
+  }
+
+  /* Section colors */
+  .wrong { background: #4a1f1f; color: #ff7b7b; }
+  .right { background: #1f3d2a; color: #7bff9d; }
+  .todo  { background: #2b2b3d; color: #e0e0e0; }
+
+</style>
+</head>
+<body>
+
+<header>Safety Vision</header>
+
+<div class="container">
+
+  <div class="grid">
+    <!-- Left: Upload & Detection -->
+    <div class="card">
+      <h3>1) Upload Image & Detect</h3>
+      <input id="imgInput" type="file" accept="image/*"/>
+      <button id="btnDetect">Run Analysis</button>
+      <h3>Detections</h3>
+      <div id="detList">—</div>
+      <h3>Annotated Image</h3>
+      <img id="annotated" alt="Annotated result"/>
+    </div>
+
+    <!-- Right: Results -->
+    <div class="card">
+      <h3>Results</h3>
+
+      <h3>Wrong</h3>
+      <div id="wrongSection"></div>
+
+      <h3>Right</h3>
+      <div id="rightSection"></div>
+
+      <h3>What To Do</h3>
+      <div id="todoSection"></div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const imgInput = document.getElementById("imgInput");
+const btnDetect = document.getElementById("btnDetect");
+const detList = document.getElementById("detList");
+const annotated = document.getElementById("annotated");
+
+const wrongSection = document.getElementById("wrongSection");
+const rightSection = document.getElementById("rightSection");
+const todoSection = document.getElementById("todoSection");
+
+let lastFile = null;
+imgInput.addEventListener("change", () => {
+  lastFile = imgInput.files[0] || null;
+  detList.textContent = "—";
+  annotated.removeAttribute("src");
+});
+
+function createAccordion(title, content, type) {
+  const acc = document.createElement("div");
+  acc.className = `accordion ${type}`;
+
+  const btn = document.createElement("button");
+  btn.textContent = title;
+  btn.onclick = () => acc.classList.toggle("active");
+
+  const contentDiv = document.createElement("div");
+  contentDiv.className = "accordion-content";
+  contentDiv.textContent = content || "";
+
+  acc.appendChild(btn);
+  acc.appendChild(contentDiv);
+  return acc;
+}
+
+btnDetect.addEventListener("click", async () => {
+  if (!lastFile) { alert("Please choose an image first."); return; }
+  btnDetect.disabled = true; btnDetect.textContent = "Processing…";
+
+  const fd = new FormData();
+  fd.append("image", lastFile);
+  try {
+    const res = await fetch("/detect", { method: "POST", body: fd });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+
+    // Detections
+    detList.textContent = "";
+    if (data.detections) {
+      data.detections.forEach(d => {
+        const span = document.createElement("div");
+        span.textContent = `${d.label} (${d.confidence.toFixed(2)})`;
+        detList.appendChild(span);
+      });
+    }
+    if (data.annotated_image_b64) {
+      annotated.src = `data:image/jpeg;base64,${data.annotated_image_b64}`;
+    }
+
+    // Results
+    wrongSection.innerHTML = "";
+    rightSection.innerHTML = "";
+    todoSection.innerHTML = "";
+
+    if (data.wrong) {
+      data.wrong.slice(0,10).forEach(item => {
+        wrongSection.appendChild(
+          createAccordion(
+            `Severity ${item.severity} - ${item.heading}`,
+            item.explanation,
+            "wrong"
+          )
+        );
+      });
+    }
+    if (data.right) {
+      data.right.slice(0,10).forEach(item => {
+        rightSection.appendChild(
+          createAccordion(item.heading, "", "right")
+        );
+      });
+    }
+    if (data.todo) {
+      data.todo.slice(0,10).forEach(item => {
+        todoSection.appendChild(
+          createAccordion(item.heading, "", "todo")
+        );
+      });
+    }
+
+  } catch (err) { alert("Detect failed: " + err.message); }
+  finally { btnDetect.disabled = false; btnDetect.textContent = "Run Analysis"; }
+});
+</script>
+</body>
+</html>
