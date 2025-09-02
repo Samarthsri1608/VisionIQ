@@ -29,7 +29,13 @@ app = Flask(__name__)
 CORS(app)
 
 # YOLOv8s (downloaded automatically on first run)
-yolo = YOLO("yolov8s.pt")
+model = None
+
+def get_yolo_model():
+    global model
+    if model is None:
+        model = YOLO("yolov8s.pt")  
+    return model
 
 # Gemini client
 client = genai.Client(api_key=GOOGLE_API_KEY)
@@ -90,7 +96,7 @@ def draw_boxes(pil_img: Image.Image, detections: List[Dict[str, Any]]) -> Image.
 @app.route("/")
 def home():
     # Serve the frontend if placed alongside app.py
-    return send_file("template/index.html")
+    return send_file("web.html")
 
 
 @app.route("/detect", methods=["POST"])
@@ -118,7 +124,7 @@ def detect():
     img_bgr = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
 
     # --- YOLOv8s inference ---
-    res = yolo.predict(img_bgr, imgsz=640, conf=0.25, verbose=False)[0]
+    res = model.predict(img_bgr, imgsz=640, conf=0.25, verbose=False)[0]
 
     detections = []
     for b in res.boxes:
@@ -126,7 +132,7 @@ def detect():
         x1, y1, x2, y2 = [int(v) for v in xyxy]
         conf = float(b.conf.cpu().numpy()[0])
         cls = int(b.cls.cpu().numpy()[0])
-        label = yolo.names[cls] if hasattr(yolo, "names") else str(cls)
+        label = model.names[cls] if hasattr(model, "names") else str(cls)
 
         detections.append({
             "label": label,
