@@ -1,5 +1,5 @@
 pip==25.2
-pillow==10.2.0
+pillow>=10.3.0
 pipx==1.4.3
 SciPy==1.11.4
 flask==3.0.0
