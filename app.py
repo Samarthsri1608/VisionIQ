@@ -9,9 +9,7 @@ from flask import Flask, request, jsonify, Response, send_file
 from flask_cors import CORS
 from PIL import Image, ImageDraw, ImageFont
 import numpy as np
-import cv2
 
-from ultralytics import YOLO  # pip install ultralytics
 from google import genai      # pip install google-genai
 from google.genai import types
 from dotenv import load_dotenv
@@ -21,21 +19,12 @@ from dotenv import load_dotenv
 # Config
 # ------------------------
 # Expect GOOGLE_API_KEY in env
-GOOGLE_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GOOGLE_API_KEY = os.getenv("GEMINI_API_KEY")
 if not GOOGLE_API_KEY:
     print("WARNING: GOOGLE_API_KEY not set. Set it before running or Gemini calls will fail.")
 
 app = Flask(__name__)
 CORS(app)
-
-# YOLOv8s (downloaded automatically on first run)
-model = None
-
-def get_yolo_model():
-    global model
-    if model is None:
-        model = YOLO("yolov8n.pt")  
-    return model
 
 # Gemini client
 client = genai.Client(api_key=GOOGLE_API_KEY)
@@ -101,15 +90,6 @@ def home():
 
 @app.route("/detect", methods=["POST"])
 def detect():
-    """
-    Form-data:
-      - image: file
-      - question (optional): string (VQA question)
-    Returns JSON:
-      - detections: [{label, confidence, box:[x1,y1,x2,y2]}]
-      - annotated_image_b64: base64 JPEG (no prefix)
-      - answer: VQA answer string
-    """
     if "image" not in request.files:
         return jsonify({"error": "no image file provided"}), 400
 
@@ -117,100 +97,89 @@ def detect():
     if f.filename == "" or not allowed_file(f.filename):
         return jsonify({"error": "invalid or unsupported file"}), 400
 
-    question = request.form.get("question", "").strip()
-    model = get_yolo_model()
-
     raw = f.read()
     pil = pil_from_bytes(raw)
-    img_bgr = cv2.cvtColor(np.array(pil), cv2.COLOR_RGB2BGR)
 
-    # --- YOLOv8s inference ---
-    res = model.predict(img_bgr, imgsz=640, conf=0.25, verbose=False)[0]
+    w, h = pil.size
 
-    detections = []
-    for b in res.boxes:
-        xyxy = b.xyxy.cpu().numpy()[0].tolist()  # [x1,y1,x2,y2]
-        x1, y1, x2, y2 = [int(v) for v in xyxy]
-        conf = float(b.conf.cpu().numpy()[0])
-        cls = int(b.cls.cpu().numpy()[0])
-        label = model.names[cls] if hasattr(model, "names") else str(cls)
+    # --- Prompt for Gemini ---
+    prompt_text = f"""
+        You are an expert safety auditor assistant.
 
-        detections.append({
-            "label": label,
-            "confidence": conf,
-            "box": [x1, y1, x2, y2]
-        })
+        Task:
+        Analyze the uploaded image ({w}x{h} pixels) and identify hazards that pose a risk to human life
+        or violate general safety standards. Return ONLY a valid JSON object.
 
-    annotated = draw_boxes(pil, detections)
-    annotated_b64 = img_to_b64(annotated)
-
-    # --- Build VQA prompt ---
-    # We pass both the detections summary and the user's question to Gemini, alongside the image itself.
-    summary_lines = [f"- {d['label']} (conf {d['confidence']:.2f}) at {d['box']}" for d in detections] or ["- No objects detected"]
-    det_summary = "Objects detected by YOLO:\n" + "\n".join(summary_lines)
-
-    # user_q = question if question else "Provide a concise description and count of key objects."
-    prompt_text = (
-        """You are an expert saftey auditor assistant.  
-        Given an image, analyze it and return the findings which are a threat to Human Life or violate the general industrial and residential saftey standards strictly in JSON format.  
-
-        Image context: {det_summary}
-
-        The JSON must contain exactly 3 keys: "wrong", "right", and "todo".  
-
-        Each should be an array of objects in the following formats:
-
-        - wrong = { "heading": <short title>, "severity": <number from 1 to 10>, "explanation": <detailed text> }
-        - right = { "heading": <short title> }
-        - todo  = { "heading": <short action point> }
-
-        Rules:
-        1. Always include up to 10 points per section. If fewer, return only available points.
-        2. "severity" must always be an integer between 1 and 10 (10 = most severe).
-        3. Keep "heading" short (max 5 words).
-        4. Explanations must be 1–3 sentences max.
-        5. Do not include anything outside the JSON object. No markdown, no prose.
-
-        Example valid JSON response:
-        {
+        JSON specification:
+        {{
         "wrong": [
-            {"heading": "Overloaded Wire", "severity": 3, "explanation": "The wire gauge is too thin for the load, causing overheating risk."}
+            {{
+            "heading": "short title (≤5 words)",
+            "severity": <integer 1–5>,
+            "explanation": "1–3 sentences",
+            "box": [x1, y1, x2, y2]   // absolute pixel coordinates for this image
+            }}
         ],
         "right": [
-            {"heading": "Proper Grounding"}
+            {{
+            "heading": "short title"
+            }}
         ],
         "todo": [
-            {"heading": "Replace thin wire with proper gauge."}
+            {{
+            "heading": "short action point"
+            }}
         ]
-        }
-        """
-    )
+        }}
 
-    # --- Gemini multimodal call (image + text) ---
-    answer_text = ""
+        Important rules:
+        1. Do not return markdown, comments, or text outside the JSON.
+        2. All bounding boxes MUST use absolute pixel coordinates, where:
+        - (0,0) = top-left corner,
+        - (w,h) = bottom-right corner,
+        - image size = {w} pixels wide × {h} pixels tall.
+        3. If no hazards are found, return "wrong": [].
+        4. Return up to 10 items per section (wrong/right/todo).
+    """
+
+
+    # --- Gemini API call ---
     try:
-        # The Python client accepts PIL.Image as a content item in many versions.
-        # If your version requires explicit parts, adapt accordingly.
         g_response = client.models.generate_content(
             model="gemini-2.5-flash",
             contents=[pil, prompt_text]
         )
-        # .text is available on successful responses
         answer_text = getattr(g_response, "text", "") or ""
     except Exception as e:
-        # If Gemini fails, still return detections and annotated image
-        answer_text = f"(VQA error) {e}"
+        return jsonify({"error": f"Gemini request failed: {str(e)}"}), 500
 
+    # --- Parse JSON safely ---
     try:
-        # Clean response (Gemini sometimes wraps JSON in markdown ```json ... ```)
         cleaned = answer_text.strip()
         if cleaned.startswith("```"):
+            # Remove ```json ... ```
             cleaned = cleaned.split("```")[1].replace("json", "", 1).strip()
-        
-        analysis = json.loads(cleaned)  # must be a dict with wrong/right/todo
+        analysis = json.loads(cleaned)
     except Exception as e:
-        return jsonify({"error": f"Invalid response from Gemini: {str(e)}"})
-    
+        return jsonify({"error": f"Invalid JSON from Gemini: {str(e)}", "raw": answer_text}), 500
+
+    # --- Build detections list from "wrong" ---
+    detections = []
+    for w_item in analysis.get("wrong", []):
+        box = w_item.get("box")
+        if box and len(box) == 4:
+            # Ensure ints
+            x1, y1, x2, y2 = [int(v) for v in box]
+            detections.append({
+                "label": w_item.get("heading", "Hazard"),
+                "confidence": w_item.get("severity", 0),
+                "box": [x1, y1, x2, y2]
+            })
+
+    # --- Draw annotated image ---
+    annotated = draw_boxes(pil, detections)
+    annotated_b64 = img_to_b64(annotated)
+
     return jsonify({
         "detections": detections,
         "annotated_image_b64": annotated_b64,
@@ -218,6 +187,7 @@ def detect():
         "right": analysis.get("right", []),
         "todo": analysis.get("todo", [])
     })
+
 
 
 
